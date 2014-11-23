@@ -1,0 +1,175 @@
+Practical Machine Learning Class Project
+========================================================
+
+This code builds a classifier to identify the way in which a dumbell was lifted based on a number of measurements. There are five ways that the dumbell can be lifted, including one correct method. The analysis uses the Weight Lifting Exercise Dataset (http://groupware.les.inf.puc-rio.br/har).
+
+The approach I took was to first create a test set, then eliminate variables that provided little information, and then use random forests to build  models and test them.  For random forests, getting the out-of-bag error is the equivalent to performing a cross-validation test.  I chose the model with the lowest out-of-bag error rate, and then tested the model on the testing data set to estimate Out-of-sample error rate. 
+
+
+First, load the data and separate out a training and a test set.  This also loads the Test Data for submitting model predictions.
+
+```{r}
+library(randomForest)
+library(caret)
+library(ggplot2)
+
+fileUrltrain<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fileUrltest<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+setInternet2(use = TRUE)
+
+training<-read.csv(file=url(fileUrltrain),stringsAsFactors=FALSE)
+
+inTrain<-createDataPartition(y=training$classe,p=0.8,list=FALSE)
+trainingSet<-training[inTrain,]
+toTest<-training[-inTrain,]
+
+#TestData for later
+TestData<-read.csv(file=url(fileUrltest),stringsAsFactor=FALSE)
+
+```
+
+These next sections remove variables that aren't helpful from the training set.
+
+First,remove variables with near zero variance:
+
+```{r}
+nsv<-nearZeroVar(trainingSet,saveMetrics=TRUE)
+nzv<-nsv$nzv
+table(nzv)
+trainingSetn<-trainingSet[,!nzv]
+dim(trainingSetn)
+
+summary(trainingSetn)
+
+```
+
+In looking at the summary data above, it is apparent that many variables have majority NA's. Get list of vars that are mostly NA's and remove these:
+
+```{r}
+namatrix<-is.na(trainingSetn)
+#Next get the number that are true (ie are NA) for each variable
+nacounts<-apply(namatrix,2,sum)
+#get true false vector for colums on whether number of NAs is less than 11000
+naL11K<-nacounts<11000
+# keep only colms where NA's are less than 11K (ie keep colms that don't have lots of NAs)
+trainingSetn1<-trainingSetn[,naL11K]
+```
+
+This section converts most prediction variables to numeric, and "classe" and "user_name" to factor.  It also removes time stamp and order variables, as these should not be useful in predictions for new samples. User_name was kept because data for it are present in the Test Data set.
+
+```{r}
+#First look a the variables to identify ones to eliminate
+str(trainingSetn1)
+
+
+convert2numeric<-function(df,x,y){
+  for (i in x:y){
+    df[,i]<-as.numeric(as.character(df[,i]))
+  }
+  return(df)
+}
+
+
+trainingSetn2N<-convert2numeric(trainingSetn1,x=8,y=(ncol(trainingSetn1)-1))
+
+trainingSetn2Nvars<-trainingSetn2N[,c(2,8:ncol(trainingSetn2N))]
+trainingSetn2Nvars$classe<-as.factor(trainingSetn2Nvars$classe)
+trainingSetn2Nvars$user_name<-as.factor(trainingSetn2Nvars$user_name)
+
+```
+
+This section builds a prediction model using random forests, and displays the out-of-bag error rate, which is equivalent to a cross-validation error rate. It also provides a rank-order list of variable importance.
+
+
+```{r}
+set.seed(1)
+modFit<-randomForest(trainingSetn2Nvars[,1:(ncol(trainingSetn2Nvars)-1)],trainingSetn2Nvars$classe)
+modFit
+x<-varImp(modFit,scale=TRUE)
+xa<-cbind(rownames(x),x)
+xo<-xa[order(-xa$Overall),]
+xo
+
+```
+
+The Out-of-Bag (OOB) error rate (equivalent to an error rate from cross-validation) for the above model is about 0.4%, which I think is good. (The calcuated error rate for this run is listed as "OOB estimate of  error rate" above. Note this number varies slightly from run to run  because the model creation has a random component and was rerun in compiling html)
+
+This next section tests whether dropping some of the variables that are not that important (at the bottom of the ranked list) improves the model.
+
+```{r}
+set.seed(1)
+trainingSetn2Nvars2<-trainingSetn2Nvars[ , -which(names(trainingSetn2Nvars) %in% c("gyros_dumbbell_z","gyros_forearm_z","gyros_forearm_x","gyros_arm_z"))]
+
+trainingSetn2Nvars2$classe<-as.factor(trainingSetn2Nvars2$classe)
+trainingSetn2Nvars2$user_name<-as.factor(trainingSetn2Nvars2$user_name)
+
+modFit2<-randomForest(trainingSetn2Nvars2[,1:(ncol(trainingSetn2Nvars2)-1)],trainingSetn2Nvars2$classe)
+modFit2
+
+```
+
+The out of bag error rate calculated is no better than the model without these variables (and in repeated runs usually was a little worse), so I chose to keep the variables in the model, and use the first model. 
+
+This code creates a feature plot for the four variables ranked highest for importance,  showing their relationships to each other and to classe. It shows the partial ability of these variables to separate out classes.
+
+```{r}
+featurePlot(x=trainingSetn2Nvars[,c("yaw_belt","pitch_forearm","magnet_dumbbell_z","pitch_belt")],y=trainingSetn2Nvars$classe,plot="pairs")
+
+```
+
+This next section evaluates the prediction ability of the model on the testing data.  First it pulls out the variables used in the model for the test set, and then predicts classes from this data.  It then creates a table of the predicted versus actual classes and calculates an Expected Out of Sample Error
+
+```{r}
+set.seed(1)
+# Adjust test set data frame to have the same variables as the training set
+toTest1<-toTest[,colnames(trainingSetn2Nvars)]
+toTest1N<-convert2numeric(toTest1,x=2,y=(ncol(toTest1)-1))
+toTest1N$user_name<-as.factor(toTest1N$user_name)
+
+pred1<-as.data.frame(predict(modFit,toTest1N))
+
+predReal1<-cbind(pred1,toTest1N$classe)
+colnames(predReal1)<-c("prediction","realClasse")
+table(predReal1$prediction,predReal1$realClasse)
+predReal1$correct<-predReal1$prediction==predReal1$realClasse
+fractionCorrect1<-sum(predReal1$prediction==predReal1$realClasse)/nrow(predReal1)
+ExpectedOutofSampleError1<-1-fractionCorrect1
+ExpectedOutofSampleError1
+print (paste0("The calculated Expected Out of Sample Error Rate is ",ExpectedOutofSampleError1*100,"%"))
+
+```
+
+The Expected Out of Sample Error Rate is listed above.
+
+This section runs the model on the TestData set for submission of class predictions
+
+```{r}
+#see variables in test data
+TestData[1,]
+VarstoTest<-colnames(trainingSetn2Nvars)
+#eliminate class from list of vars to test
+VarstoTest1<-VarstoTest[-53]
+TestData1<-TestData[,VarstoTest1]
+
+#Convert variables to proper classes
+TestData1N<-convert2numeric(TestData1,x=2,y=(ncol(TestData1)))
+TestData1N$user_name<-as.factor(TestData1N$user_name)
+
+#Predict based on first model above
+
+predTD<-as.data.frame(predict(modFit,TestData1N))
+
+#Write answer files for submission
+predTDvec<-as.vector(predTD[,1])
+answers<-predTDvec
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+
+```
